@@ -30,6 +30,8 @@ index a3af186..bb65872 100644
        case D3D9Format::R3G3B2: return {}; // Unsupported
 @@ -54,13 +54,16 @@ namespace dxvk {
  
+       case D3D9Format::A8R3G3B2: return {}; // Unsupported
+ 
 +      // GeneralsX @bugfix Android port 30/07/2026 Same fix as A4R4G4B4 above,
 +      // same reason (Mali-G76 can't actually create VK_FORMAT_A4R4G4B4_UNORM_PACK16
 +      // images). Alpha forced to 1 via swizzle, same pattern as X8R8G8B8.
@@ -51,4 +53,3 @@ index a3af186..bb65872 100644
 +        VK_FORMAT_R8G8B8A8_UNORM,
 +        VK_FORMAT_R8G8B8A8_SRGB,
 +        VK_IMAGE_ASPECT_COLOR_BIT };
-+
