@@ -1,0 +1,9 @@
+name: CI probe
+on:
+  push:
+    branches: [ci/build-f3b4-gles-test]
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Actions probe for f3b4ee4 build branch"
