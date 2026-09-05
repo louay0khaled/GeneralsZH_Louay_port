@@ -47,3 +47,45 @@ index a3af186..bb65872 100644
  
        case D3D9Format::A2B10G10R10: return {
          VK_FORMAT_A2B10G10R10_UNORM_PACK32, // The A2 is out of place here. This should be investigated.
+       case D3D9Format::A2B10G10R10: return {
+         VK_FORMAT_A2B10G10R10_UNORM_PACK32, // The A2 is out of place here. This should be investigated.
+         VK_FORMAT_UNDEFINED,
+         VK_IMAGE_ASPECT_COLOR_BIT };
++
++diff --git a/src/dxvk/dxvk_presenter.cpp b/src/dxvk/dxvk_presenter.cpp
++--- a/src/dxvk/dxvk_presenter.cpp
+++++ b/src/dxvk/dxvk_presenter.cpp
++@@ -1567,6 +1567,25 @@ namespace dxvk {
++   VkFormat Presenter::pickFormat(
++           uint32_t                  numSupported,
++     const VkSurfaceFormatKHR*       pSupported,
++           VkColorSpaceKHR           colorSpace,
++           VkFormat                  format) {
+++#if defined(__ANDROID__)
+++    // Test workaround for Android Mali: the device is currently selecting
+++    // A2B10G10R10 for the SDR swapchain. Force an 8-bit UNORM SDR format
+++    // when the application explicitly requested a 10-bit format, while
+++    // preserving the original selection when no 8-bit format is supported.
+++    if (colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR
+++     && (format == VK_FORMAT_A2B10G10R10_UNORM_PACK32
+++      || format == VK_FORMAT_A2R10G10B10_UNORM_PACK32)) {
+++      VkFormat eightBit = VK_FORMAT_UNDEFINED;
+++      for (uint32_t i = 0; i < numSupported; i++) {
+++        if (pSupported[i].colorSpace != colorSpace)
+++          continue;
+++        if (pSupported[i].format == VK_FORMAT_R8G8B8A8_UNORM) {
+++          eightBit = VK_FORMAT_R8G8B8A8_UNORM;
+++          break;
+++        }
+++        if (eightBit == VK_FORMAT_UNDEFINED
+++         && pSupported[i].format == VK_FORMAT_B8G8R8A8_UNORM)
+++          eightBit = VK_FORMAT_B8G8R8A8_UNORM;
+++      }
+++      if (eightBit != VK_FORMAT_UNDEFINED)
+++        format = eightBit;
+++    }
+++#endif
++
+     static const std::array<std::pair<VkFormat, VkFormat>, 3> srgbFormatMap = {{
+       { VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_SRGB },
+       { VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_B8G8R8A8_SRGB },
