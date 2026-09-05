@@ -1,0 +1,1 @@
+Android CI trigger for Helio G99 GLES validation. No source-code change.
