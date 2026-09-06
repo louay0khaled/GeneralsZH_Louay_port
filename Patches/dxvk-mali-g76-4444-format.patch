@@ -1,55 +1,170 @@
-diff --git a/src/d3d9/d3d9_format.cpp b/src/d3d9/d3d9_format.cpp
-index a3af186..bb65872 100644
---- a/src/d3d9/d3d9_format.cpp
-+++ b/src/d3d9/d3d9_format.cpp
-@@ -38,9 +38,23 @@ namespace dxvk {
-         VK_FORMAT_UNDEFINED,
-         VK_IMAGE_ASPECT_COLOR_BIT };
+diff --git a/src/d3d9/d3d9_common_texture.cpp b/src/d3d9/d3d9_common_texture.cpp
+--- a/src/d3d9/d3d9_common_texture.cpp
++++ b/src/d3d9/d3d9_common_texture.cpp
+@@ -330,3 +330,7 @@
+     imageInfo.format          = m_mapping.ConversionFormatInfo.FormatColor != VK_FORMAT_UNDEFINED
+                               ? m_mapping.ConversionFormatInfo.FormatColor
+                               : m_mapping.FormatColor;
++#if defined(__ANDROID__)
++    if (IsDXTFormat(m_desc.Format))
++      imageInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
++#endif
+@@ -390,4 +390,7 @@
+     bool isMutable     = m_mapping.FormatSrgb != VK_FORMAT_UNDEFINED;
++#if defined(__ANDROID__)
++    isMutable &= !IsDXTFormat(m_desc.Format);
++#endif
+     bool isColorFormat = (formatProperties->aspectMask & VK_IMAGE_ASPECT_COLOR_BIT) != 0;
  
-+      // GeneralsX @bugfix Android port 30/07/2026 VK_FORMAT_A4R4G4B4_UNORM_PACK16
-+      // is core-only since Vulkan 1.3 (VK_EXT_4444_formats backports it to
-+      // older versions). Registering that extension wasn't enough on
-+      // Mali-G76 (Vulkan 1.1) -- vkGetPhysicalDeviceImageFormatProperties2
-+      // still reported the format as unusable for actual image creation
-+      // even with the extension present, so CreateTexture kept silently
-+      // failing (confirmed via a real Android tombstone: SIGSEGV in
-+      // WaterRenderObjClass::init, which locks a surface DXVK never
-+      // actually created). Mapping to the same 8-bit BGRA format already
-+      // used for A8R8G8B8 sidesteps the whole "does this specific driver's
-+      // 4444-format support actually work" question -- it's universally
-+      // supported, and the handful of low-res UI/placeholder textures that
-+      // use this D3D9 format (fonts, radar, shroud, thumbnails) don't
-+      // notice the extra memory.
-       case D3D9Format::A4R4G4B4: return {
--        VK_FORMAT_A4R4G4B4_UNORM_PACK16,
--        VK_FORMAT_UNDEFINED,
-+        VK_FORMAT_B8G8R8A8_UNORM,
-+        VK_FORMAT_B8G8R8A8_SRGB,
-         VK_IMAGE_ASPECT_COLOR_BIT };
+     if (isMutable && isColorFormat) {
+@@ -650,3 +653,7 @@
+     viewInfo.format    = m_mapping.ConversionFormatInfo.FormatColor != VK_FORMAT_UNDEFINED
+                        ? PickSRGB(m_mapping.ConversionFormatInfo.FormatColor, m_mapping.ConversionFormatInfo.FormatSrgb, Srgb)
+                        : PickSRGB(m_mapping.FormatColor, m_mapping.FormatSrgb, Srgb);
++#if defined(__ANDROID__)
++    if (IsDXTFormat(m_desc.Format))
++      viewInfo.format = Srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
++#endif
  
-       case D3D9Format::R3G3B2: return {}; // Unsupported
-@@ -54,13 +54,16 @@ namespace dxvk {
+     viewInfo.aspects   = lookupFormatInfo(viewInfo.format)->aspectMask;
+
+diff --git a/src/d3d9/d3d9_device.cpp b/src/d3d9/d3d9_device.cpp
+--- a/src/d3d9/d3d9_device.cpp
++++ b/src/d3d9/d3d9_device.cpp
+@@ -5070,3 +5070,89 @@
++static inline void DecodeBC565(uint16_t c, uint8_t& r, uint8_t& g, uint8_t& b) {
++  r = uint8_t(((c >> 11) & 0x1f) * 255 / 31);
++  g = uint8_t(((c >> 5)  & 0x3f) * 255 / 63);
++  b = uint8_t(( c        & 0x1f) * 255 / 31);
++}
++
++static void DecodeBC1Block(const uint8_t* src, bool alphaMode, uint8_t* dst) {
++  uint16_t c0 = uint16_t(src[0] | (src[1] << 8));
++  uint16_t c1 = uint16_t(src[2] | (src[3] << 8));
++  uint8_t pal[4][4];
++  DecodeBC565(c0, pal[0][0], pal[0][1], pal[0][2]);
++  DecodeBC565(c1, pal[1][0], pal[1][1], pal[1][2]);
++  pal[0][3] = pal[1][3] = 255;
++  bool threeColor = alphaMode && c0 <= c1;
++  if (threeColor) {
++    for (int c = 0; c < 3; c++) pal[2][c] = uint8_t((pal[0][c] + pal[1][c]) / 2);
++    pal[2][3] = 255;
++    pal[3][0] = pal[3][1] = pal[3][2] = pal[3][3] = 0;
++  } else {
++    for (int c = 0; c < 3; c++) {
++      pal[2][c] = uint8_t((2 * pal[0][c] + pal[1][c]) / 3);
++      pal[3][c] = uint8_t((pal[0][c] + 2 * pal[1][c]) / 3);
++    }
++    pal[2][3] = pal[3][3] = 255;
++  }
++  uint32_t indices = uint32_t(src[4]) | (uint32_t(src[5]) << 8)
++                   | (uint32_t(src[6]) << 16) | (uint32_t(src[7]) << 24);
++  for (int i = 0; i < 16; i++) {
++    uint32_t idx = (indices >> (2 * i)) & 3;
++    std::memcpy(dst + i * 4, pal[idx], 4);
++  }
++}
++
++static void DecodeBC3Alpha(const uint8_t* src, uint8_t* alpha) {
++  uint8_t pal[8] = { src[0], src[1] };
++  if (pal[0] > pal[1]) {
++    for (int i = 1; i <= 6; i++)
++      pal[i + 1] = uint8_t(((7 - i) * pal[0] + i * pal[1]) / 7);
++  } else {
++    for (int i = 1; i <= 4; i++)
++      pal[i + 1] = uint8_t(((5 - i) * pal[0] + i * pal[1]) / 5);
++    pal[6] = 0;
++    pal[7] = 255;
++  }
++  uint64_t bits = 0;
++  for (int i = 0; i < 6; i++) bits |= uint64_t(src[2 + i]) << (8 * i);
++  for (int i = 0; i < 16; i++) alpha[i] = pal[(bits >> (3 * i)) & 7];
++}
++
++static bool DecodeDXTLevel(D3D9Format fmt, uint32_t width, uint32_t height,
++                           const uint8_t* src, size_t srcSize,
++                           std::vector<uint8_t>& dst) {
++  const bool dxt1 = fmt == D3D9Format::DXT1;
++  const uint32_t blockBytes = dxt1 ? 8 : 16;
++  const uint32_t blocksX = (width + 3) / 4;
++  const uint32_t blocksY = (height + 3) / 4;
++  const size_t required = size_t(blocksX) * blocksY * blockBytes;
++  if (required > srcSize) return false;
++  dst.resize(size_t(width) * height * 4);
++  for (uint32_t by = 0; by < blocksY; by++) {
++    for (uint32_t bx = 0; bx < blocksX; bx++) {
++      const uint8_t* block = src + (size_t(by) * blocksX + bx) * blockBytes;
++      uint8_t rgba[64];
++      uint8_t alpha[16];
++      if (dxt1) {
++        DecodeBC1Block(block, true, rgba);
++      } else if (fmt == D3D9Format::DXT2 || fmt == D3D9Format::DXT3) {
++        DecodeBC1Block(block + 8, false, rgba);
++        for (int i = 0; i < 16; i++)
++          rgba[i * 4 + 3] = uint8_t(((block[i / 2] >> ((i & 1) * 4)) & 15) * 17);
++      } else {
++        DecodeBC3Alpha(block, alpha);
++        DecodeBC1Block(block + 8, false, rgba);
++        for (int i = 0; i < 16; i++) rgba[i * 4 + 3] = alpha[i];
++      }
++      uint32_t maxX = std::min(4u, width - bx * 4);
++      uint32_t maxY = std::min(4u, height - by * 4);
++      for (uint32_t y = 0; y < maxY; y++)
++        for (uint32_t x = 0; x < maxX; x++)
++          std::memcpy(&dst[(size_t(by * 4 + y) * width + bx * 4 + x) * 4],
++                      &rgba[(y * 4 + x) * 4], 4);
++    }
++  }
++  return true;
++}
++
+   HRESULT D3D9DeviceEx::FlushImage(
+         D3D9CommonTexture*      pResource,
+         UINT                    Subresource) {
+@@ -5125,1 +5211,45 @@
+     auto convertFormat = pDestTexture->GetFormatMapping().ConversionFormatInfo;
++#if defined(__ANDROID__)
++    // Mali/Android devices commonly expose no BC1-BC3 texture support.
++    // Keep the D3D9 mapping compressed for correct CPU pitch/size semantics,
++    // but decode to RGBA8 before uploading to the Vulkan image.
++    if (IsDXTFormat(pDestTexture->Desc()->Format)) {
++      if (SrcOffset.x != 0 || SrcOffset.y != 0 || SrcOffset.z != 0
++       || DestOffset.x != 0 || DestOffset.y != 0 || DestOffset.z != 0
++       || SrcExtent != srcTexLevelExtent) {
++        Logger::warn("D3D9: DXT software decode requires a full mip upload");
++      }
++
++      const void* mapPtr = MapTexture(pSrcTexture, SrcSubresource);
++      std::vector<uint8_t> decoded;
++      if (!DecodeDXTLevel(pDestTexture->Desc()->Format,
++                          srcTexLevelExtent.width, srcTexLevelExtent.height,
++                          reinterpret_cast<const uint8_t*>(mapPtr),
++                          pSrcTexture->GetMipSize(SrcSubresource), decoded)) {
++        Logger::err("D3D9: Failed to software-decode DXT texture");
++        UnmapTextures();
++        return;
++      }
++
++      D3D9BufferSlice slice = AllocStagingBuffer(decoded.size());
++      std::memcpy(slice.mapPtr, decoded.data(), decoded.size());
++
++      VkImageSubresourceLayers rgbaLayers = {
++        VK_IMAGE_ASPECT_COLOR_BIT, dstSubresource.mipLevel, dstSubresource.arrayLayer, 1 };
++      EmitCs([
++        cSlice = slice.slice,
++        cImage = image,
++        cLayers = rgbaLayers,
++        cExtent = dstTexLevelExtent
++      ] (DxvkContext* ctx) {
++        ctx->copyBufferToImage(
++          cImage, cLayers, { 0, 0, 0 }, cExtent,
++          cSlice.buffer(), cSlice.offset(), 0, 0, VK_FORMAT_UNDEFINED);
++      });
++
++      UnmapTextures();
++      ConsiderFlush(GpuFlushType::ImplicitWeakHint);
++      return;
++    }
++#endif
  
-       case D3D9Format::A8R3G3B2: return {}; // Unsupported
- 
-+      // GeneralsX @bugfix Android port 30/07/2026 Same fix as A4R4G4B4 above,
-+      // same reason (Mali-G76 can't actually create VK_FORMAT_A4R4G4B4_UNORM_PACK16
-+      // images). Alpha forced to 1 via swizzle, same pattern as X8R8G8B8.
-       case D3D9Format::X4R4G4B4: return {
--        VK_FORMAT_A4R4G4B4_UNORM_PACK16,
--        VK_FORMAT_UNDEFINED,
--        VK_IMAGE_ASPECT_COLOR_BIT };
-+        VK_FORMAT_B8G8R8A8_UNORM,
-+        VK_FORMAT_B8G8R8A8_SRGB,
-+        VK_IMAGE_ASPECT_COLOR_BIT,
-+        { VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G,
-+          VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_ONE }};
- 
-       case D3D9Format::A2B10G10R10: return {
--        VK_FORMAT_A2B10G10R10_UNORM_PACK32, // The A2 is out of place here. This should be investigated.
-+        // TEST: the log shows Android/Mali selecting this 10-bit format for
-+        // the SDR swapchain. Use a normal 8-bit format for this test build
-+        // so we can prove or disprove the 10-bit format path as the cause.
-+        VK_FORMAT_R8G8B8A8_UNORM,
-+        VK_FORMAT_R8G8B8A8_SRGB,
-+        VK_IMAGE_ASPECT_COLOR_BIT };
+     if (unlikely(pSrcTexture->NeedsReadback(SrcSubresource))) {
