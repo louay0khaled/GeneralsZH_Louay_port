@@ -1,8 +1,7 @@
 diff --git a/src/dxvk/dxvk_presenter.cpp b/src/dxvk/dxvk_presenter.cpp
-index 38b8a2d6..android-swapchain 100644
 --- a/src/dxvk/dxvk_presenter.cpp
 +++ b/src/dxvk/dxvk_presenter.cpp
-@@ -580,7 +580,31 @@ namespace dxvk {
+@@ -580,4 +580,37 @@ namespace dxvk {
  
      VkSurfaceFormatKHR surfaceFormat = pickSurfaceFormat(formats.size(), formats.data(), m_preferredFormat);
 +
