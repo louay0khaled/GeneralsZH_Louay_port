@@ -42,8 +42,8 @@ diff --git a/src/dxvk/dxvk_presenter.cpp b/src/dxvk/dxvk_presenter.cpp
      // Select a present mode for the current sync interval
      if ((status = getSupportedPresentModes(modes)))
        return status;
-
-diff --git a/src/d3d9/d3d9_format.cpp b/src/d3d9/d3d9_format.cpp
+ 
+ diff --git a/src/d3d9/d3d9_format.cpp b/src/d3d9/d3d9_format.cpp
 --- a/src/d3d9/d3d9_format.cpp
 +++ b/src/d3d9/d3d9_format.cpp
 @@ -7,14 +7,30 @@ namespace dxvk {
@@ -93,3 +93,299 @@ diff --git a/src/d3d9/d3d9_format.cpp b/src/d3d9/d3d9_format.cpp
          VK_FORMAT_R5G6B5_UNORM_PACK16,
          VK_FORMAT_UNDEFINED,
          VK_IMAGE_ASPECT_COLOR_BIT};
++
++diff --git a/src/d3d9/d3d9_format.h b/src/d3d9/d3d9_format.h
++--- a/src/d3d9/d3d9_format.h
+++++ b/src/d3d9/d3d9_format.h
++@@ -118,9 +118,12 @@ namespace dxvk {
++     D3D9ConversionFormat_A2W10V10U10,
++     D3D9ConversionFormat_W11V11U10,
++     D3D9ConversionFormat_NV12,
++     D3D9ConversionFormat_YV12,
+++    D3D9ConversionFormat_DXT1,
+++    D3D9ConversionFormat_DXT23,
+++    D3D9ConversionFormat_DXT45,
++     D3D9ConversionFormat_Count
++   };
++@@ -190,6 +193,9 @@ namespace dxvk {
++     bool m_dfSupport;
++     bool m_x4r4g4b4Support;
++     bool m_d16lockableSupport;
+++    bool m_dxt1Support;
+++    bool m_dxt23Support;
+++    bool m_dxt45Support;
++   };
++ 
++   inline bool IsFourCCFormat(D3D9Format format) {
++diff --git a/src/d3d9/d3d9_format.cpp b/src/d3d9/d3d9_format.cpp
++--- a/src/d3d9/d3d9_format.cpp
+++++ b/src/d3d9/d3d9_format.cpp
++@@ -475,6 +475,12 @@ namespace dxvk {
++     // Only AMD supports D16_LOCKABLE natively
++     m_d16lockableSupport = vendorId == uint32_t(DxvkGpuVendor::Amd) ? true : options.supportD16Lockable;
++ 
+++    // Mobile GPUs such as Mali-G52 may expose no hardware BC texture
+++    // compression. In that case DXT textures must be decoded before use.
+++    m_dxt1Support  = CheckImageFormatSupport(adapter, VK_FORMAT_BC1_RGBA_UNORM_BLOCK, VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT);
+++    m_dxt23Support = CheckImageFormatSupport(adapter, VK_FORMAT_BC2_UNORM_BLOCK,       VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT);
+++    m_dxt45Support = CheckImageFormatSupport(adapter, VK_FORMAT_BC3_UNORM_BLOCK,       VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT);
+++
++     // AMD do not support 24-bit depth buffers on Vulkan,
++     // so we have to fall back to a 32-bit depth format.
++     m_d24s8Support = !options.useD32forD24 &&
++@@ -505,5 +511,21 @@ namespace dxvk {
++     if (Format == D3D9Format::DF24 && !m_dfSupport)
++       return D3D9_VK_FORMAT_MAPPING();
++
+++    // Keep the original BC mapping for source-buffer sizing and decoding,
+++    // but use an RGBA8 destination image when BC is unavailable.
+++    if ((Format == D3D9Format::DXT1  && !m_dxt1Support)
+++     || ((Format == D3D9Format::DXT2 || Format == D3D9Format::DXT3) && !m_dxt23Support)
+++     || ((Format == D3D9Format::DXT4 || Format == D3D9Format::DXT5) && !m_dxt45Support)) {
+++      mapping.ConversionFormatInfo.FormatColor = VK_FORMAT_R8G8B8A8_UNORM;
+++      mapping.ConversionFormatInfo.FormatSrgb  = VK_FORMAT_R8G8B8A8_SRGB;
+++
+++      if (Format == D3D9Format::DXT1)
+++        mapping.ConversionFormatInfo.FormatType = D3D9ConversionFormat_DXT1;
+++      else if (Format == D3D9Format::DXT2 || Format == D3D9Format::DXT3)
+++        mapping.ConversionFormatInfo.FormatType = D3D9ConversionFormat_DXT23;
+++      else
+++        mapping.ConversionFormatInfo.FormatType = D3D9ConversionFormat_DXT45;
+++    }
++ 
++     if (!m_d24s8Support && mapping.FormatColor == VK_FORMAT_D24_UNORM_S8_UINT)
++       mapping.FormatColor = (mapping.Aspect & VK_IMAGE_ASPECT_STENCIL_BIT) ? VK_FORMAT_D32_SFLOAT_S8_UINT : VK_FORMAT_D32_SFLOAT;
++diff --git a/src/d3d9/d3d9_common_texture.cpp b/src/d3d9/d3d9_common_texture.cpp
++--- a/src/d3d9/d3d9_common_texture.cpp
+++++ b/src/d3d9/d3d9_common_texture.cpp
++@@ -340,12 +340,21 @@ namespace dxvk {
++     // by a view with a different format. Depth-stencil formats cannot
++     // be reinterpreted in Vulkan, so we'll ignore those.
++     auto formatProperties = lookupFormatInfo(m_mapping.FormatColor);
++ 
++-    bool isMutable     = m_mapping.FormatSrgb != VK_FORMAT_UNDEFINED;
+++    VkFormat viewFormats[2] = {
+++      m_mapping.FormatColor,
+++      m_mapping.FormatSrgb
+++    };
+++    if (m_mapping.ConversionFormatInfo.FormatColor != VK_FORMAT_UNDEFINED) {
+++      viewFormats[0] = m_mapping.ConversionFormatInfo.FormatColor;
+++      viewFormats[1] = m_mapping.ConversionFormatInfo.FormatSrgb;
+++    }
+++
+++    bool isMutable     = viewFormats[1] != VK_FORMAT_UNDEFINED;
++     bool isColorFormat = (formatProperties->aspectMask & VK_IMAGE_ASPECT_COLOR_BIT) != 0;
++ 
++     if (isMutable && isColorFormat) {
++       imageInfo.flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
++ 
++       imageInfo.viewFormatCount = 2;
++-      imageInfo.viewFormats     = m_mapping.Formats;
+++      imageInfo.viewFormats     = viewFormats;
++     }
++ 
++     const bool hasAttachmentFeedbackLoops =
++diff --git a/src/d3d9/d3d9_format_helpers.cpp b/src/d3d9/d3d9_format_helpers.cpp
++--- a/src/d3d9/d3d9_format_helpers.cpp
+++++ b/src/d3d9/d3d9_format_helpers.cpp
++@@ -1,9 +1,10 @@
++ #include "d3d9_format_helpers.h"
++ 
++ #include <d3d9_convert_yuy2_uyvy.h>
++ #include <d3d9_convert_l6v5u5.h>
++ #include <d3d9_convert_x8l8v8u8.h>
++ #include <d3d9_convert_a2w10v10u10.h>
++ #include <d3d9_convert_w11v11u10.h>
++ #include <d3d9_convert_nv12.h>
++ #include <d3d9_convert_yv12.h>
+++#include <cstring>
++ 
++ namespace dxvk {
++@@ -10,5 +11,135 @@ namespace dxvk {
+++  static inline void DecodeDXT565(
+++          uint16_t c,
+++          uint8_t* r,
+++          uint8_t* g,
+++          uint8_t* b) {
+++    *r = uint8_t(((c >> 11) & 0x1f) * 255 / 31);
+++    *g = uint8_t(((c >>  5) & 0x3f) * 255 / 63);
+++    *b = uint8_t(( c        & 0x1f) * 255 / 31);
+++  }
+++
+++  static void DecodeDXTColorBlock(
+++    const uint8_t* src,
+++    bool            punchThrough,
+++    uint8_t*        dst) {
+++    uint16_t c0 = uint16_t(src[0] | (src[1] << 8));
+++    uint16_t c1 = uint16_t(src[2] | (src[3] << 8));
+++    uint8_t r0, g0, b0, r1, g1, b1;
+++    DecodeDXT565(c0, &r0, &g0, &b0);
+++    DecodeDXT565(c1, &r1, &g1, &b1);
++
+++    uint8_t palette[4][4] = {
+++      { r0, g0, b0, 255 },
+++      { r1, g1, b1, 255 },
+++      { 0,  0,  0,  255 },
+++      { 0,  0, 0,   0   },
+++    };
++
+++    if (punchThrough && c0 <= c1) {
+++      palette[2][0] = uint8_t((r0 + r1) / 2);
+++      palette[2][1] = uint8_t((g0 + g1) / 2);
+++      palette[2][2] = uint8_t((b0 + b1) / 2);
+++    } else {
+++      for (uint32_t c = 0; c < 3; c++) {
+++        palette[2][c] = uint8_t((2 * palette[0][c] + palette[1][c]) / 3);
+++        palette[3][c] = uint8_t((palette[0][c] + 2 * palette[1][c]) / 3);
+++      }
+++      palette[3][3] = 255;
+++    }
++
+++    const uint32_t indices = uint32_t(src[4])
+++                           | (uint32_t(src[5]) << 8)
+++                           | (uint32_t(src[6]) << 16)
+++                           | (uint32_t(src[7]) << 24);
+++    for (uint32_t i = 0; i < 16; i++) {
+++      const uint32_t index = (indices >> (i * 2)) & 3;
+++      std::memcpy(dst + i * 4, palette[index], 4);
+++    }
+++  }
++
+++  static void DecodeDXTAlphaBlock(
+++    const uint8_t* src,
+++    uint8_t*        dst) {
+++    const uint8_t a0 = src[0];
+++    const uint8_t a1 = src[1];
+++    uint8_t palette[8] = { a0, a1 };
++
+++    if (a0 > a1) {
+++      for (uint32_t i = 2; i < 8; i++)
+++        palette[i] = uint8_t(((8 - i) * a0 + (i - 1) * a1) / 7);
+++    } else {
+++      for (uint32_t i = 2; i < 7; i++)
+++        palette[i] = uint8_t(((7 - i) * a0 + (i - 1) * a1) / 5);
+++      palette[6] = 0;
+++      palette[7] = 255;
+++    }
++
+++    uint64_t indices = 0;
+++    for (uint32_t i = 0; i < 6; i++)
+++      indices |= uint64_t(src[2 + i]) << (i * 8);
++
+++    for (uint32_t i = 0; i < 16; i++)
+++      dst[i] = palette[(indices >> (i * 3)) & 7];
+++  }
++
+++  static bool DecodeDXTLevel(
+++          D3D9ConversionFormat format,
+++          uint32_t             width,
+++          uint32_t             height,
+++    const uint8_t*             src,
+++          size_t               srcSize,
+++          std::vector<uint8_t>& dst) {
+++    const uint32_t blockBytes = format == D3D9ConversionFormat_DXT1 ? 8u : 16u;
+++    const uint32_t blocksWide = (width + 3u) / 4u;
+++    const uint32_t blocksHigh = (height + 3u) / 4u;
+++    const size_t required = size_t(blocksWide) * blocksHigh * blockBytes;
+++    if (srcSize < required)
+++      return false;
++
+++    dst.resize(size_t(width) * height * 4u);
+++    for (uint32_t by = 0; by < blocksHigh; by++) {
+++      for (uint32_t bx = 0; bx < blocksWide; bx++) {
+++        const uint8_t* block = src + (size_t(by) * blocksWide + bx) * blockBytes;
+++        uint8_t rgba[64] = { };
+++        uint8_t alpha[16] = { };
++
+++        if (format == D3D9ConversionFormat_DXT1) {
+++          DecodeDXTColorBlock(block, true, rgba);
+++        } else {
+++          DecodeDXTColorBlock(block + 8, false, rgba);
++
+++          if (format == D3D9ConversionFormat_DXT23) {
+++            for (uint32_t i = 0; i < 16; i++)
+++              alpha[i] = uint8_t(((block[i / 2] >> ((i & 1) * 4)) & 0xf) * 17);
+++          } else {
+++            DecodeDXTAlphaBlock(block, alpha);
+++          }
++
+++          for (uint32_t i = 0; i < 16; i++)
+++            rgba[i * 4 + 3] = alpha[i];
+++        }
++
+++        const uint32_t baseX = bx * 4u;
+++        const uint32_t baseY = by * 4u;
+++        const uint32_t maxX = std::min(4u, width  - std::min(baseX, width));
+++        const uint32_t maxY = std::min(4u, height - std::min(baseY, height));
+++        for (uint32_t y = 0; y < maxY; y++) {
+++          for (uint32_t x = 0; x < maxX; x++) {
+++            const uint32_t px = baseX + x;
+++            const uint32_t py = baseY + y;
+++            std::memcpy(
+++              &dst[(size_t(py) * width + px) * 4],
+++              &rgba[(y * 4 + x) * 4],
+++              4);
+++          }
+++        }
+++      }
+++    }
+++    return true;
+++  }
++
++   D3D9FormatHelper::D3D9FormatHelper(const Rc<DxvkDevice>& device)
++   : m_device          (device)
++   , m_setLayout       (CreateSetLayout())
++   , m_pipelineLayout  (CreatePipelineLayout()) {
++@@ -62,6 +204,52 @@ namespace dxvk {
++       case D3D9ConversionFormat_W11V11U10:
++         ConvertGenericFormat(ctx, conversionFormat, dstImage, dstSubresource, srcSlice, VK_FORMAT_R32_UINT, { 1u, 1u });
++         break;
+++
+++      case D3D9ConversionFormat_DXT1:
+++      case D3D9ConversionFormat_DXT23:
+++      case D3D9ConversionFormat_DXT45: {
+++        const VkExtent3D extent = dstImage->mipLevelExtent(dstSubresource.mipLevel);
+++        const uint8_t* src = reinterpret_cast<const uint8_t*>(
+++          srcSlice.buffer()->mapPtr(srcSlice.offset()));
++
+++        std::vector<uint8_t> decoded;
+++        if (!DecodeDXTLevel(
+++              conversionFormat.FormatType,
+++              extent.width,
+++              extent.height,
+++              src,
+++              srcSlice.length(),
+++              decoded)) {
+++          Logger::warn("D3D9: Invalid DXT texture data");
+++          break;
+++        }
++
+++        DxvkBufferCreateInfo bufferInfo = { };
+++        bufferInfo.size   = decoded.size();
+++        bufferInfo.usage  = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+++        bufferInfo.stages = VK_PIPELINE_STAGE_TRANSFER_BIT;
+++        bufferInfo.access = VK_ACCESS_TRANSFER_READ_BIT;
++
+++        Rc<DxvkBuffer> decodedBuffer = m_device->createBuffer(bufferInfo,
+++          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+++        std::memcpy(decodedBuffer->mapPtr(0), decoded.data(), decoded.size());
++
+++        VkBufferImageCopy2 region = { VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2 };
+++        region.imageSubresource = dstSubresource;
+++        region.imageExtent = extent;
++
+++        VkCopyBufferToImageInfo2 copyInfo = { VK_STRUCTURE_TYPE_COPY_BUFFER_TO_IMAGE_INFO_2 };
+++        copyInfo.srcBuffer = decodedBuffer->handle();
+++        copyInfo.dstImage = dstImage->handle();
+++        copyInfo.dstImageLayout = VK_IMAGE_LAYOUT_GENERAL;
+++        copyInfo.regionCount = 1;
+++        copyInfo.pRegions = &region;
++
+++        ctx.cmd->cmdCopyBufferToImage(DxvkCmdBuffer::ExecBuffer, &copyInfo);
+++        ctx.cmd->track(decodedBuffer, DxvkAccess::Read);
+++        ctx.cmd->track(dstImage, DxvkAccess::Write);
+++        break;
+++      }
+ 
+       default:
+         Logger::warn("Unimplemented format conversion");
