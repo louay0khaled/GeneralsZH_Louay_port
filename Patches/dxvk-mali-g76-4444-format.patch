@@ -2,7 +2,7 @@ diff --git a/src/d3d9/d3d9_format.cpp b/src/d3d9/d3d9_format.cpp
 index a3af186..bb65872 100644
 --- a/src/d3d9/d3d9_format.cpp
 +++ b/src/d3d9/d3d9_format.cpp
-@@ -41,26 +41,28 @@
+@@ -41,25 +41,27 @@
        case D3D9Format::A4R4G4B4: return {
 -        VK_FORMAT_A4R4G4B4_UNORM_PACK16,
 -        VK_FORMAT_UNDEFINED,
