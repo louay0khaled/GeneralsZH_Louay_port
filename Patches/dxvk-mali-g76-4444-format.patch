@@ -7,3 +7,8 @@ diff --git a/src/d3d9/d3d9_format.h b/src/d3d9/d3d9_format.h
 +    D3D9ConversionFormat_DXT23,
 +    D3D9ConversionFormat_DXT45,
      D3D9ConversionFormat_Count
+@@ -216,3 +219,4 @@ namespace dxvk {
+     bool m_dfSupport;
+     bool m_x4r4g4b4Support;
+     bool m_d16lockableSupport;
++    bool m_dxtSupport;
