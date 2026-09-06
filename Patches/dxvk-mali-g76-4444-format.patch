@@ -9,7 +9,15 @@ diff --git a/src/d3d9/d3d9_common_texture.cpp b/src/d3d9/d3d9_common_texture.cpp
 +    if (IsDXTFormat(m_desc.Format))
 +      imageInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
 +#endif
-@@ -650,3 +654,7 @@
+@@ -390,4 +390,7 @@
+     bool isMutable     = m_mapping.FormatSrgb != VK_FORMAT_UNDEFINED;
++#if defined(__ANDROID__)
++    isMutable &= !IsDXTFormat(m_desc.Format);
++#endif
+     bool isColorFormat = (formatProperties->aspectMask & VK_IMAGE_ASPECT_COLOR_BIT) != 0;
+ 
+     if (isMutable && isColorFormat) {
+@@ -650,3 +653,7 @@
      viewInfo.format    = m_mapping.ConversionFormatInfo.FormatColor != VK_FORMAT_UNDEFINED
                         ? PickSRGB(m_mapping.ConversionFormatInfo.FormatColor, m_mapping.ConversionFormatInfo.FormatSrgb, Srgb)
                         : PickSRGB(m_mapping.FormatColor, m_mapping.FormatSrgb, Srgb);
